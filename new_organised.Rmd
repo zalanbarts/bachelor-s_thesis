@@ -1,0 +1,513 @@
+---
+title: "Robustness of Carry and Momentum Strategies in Currency Markets"
+subtitle: "Are carry and momentum returns economically and statistically significant in both developed and emerging market currencies, and do they differ in magnitude, volatility?"
+author: "Zalan Barts"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+fontsize: 12pt
+linestretch: 1.5
+indent: true
+colorlinks: true
+citecolor: blue
+linkcolor: blue
+urlcolor: blue
+bibliography: references.bib
+link-citations: true
+output:
+  bookdown::pdf_document2:
+    toc: false
+    toc_depth: 3
+    number_sections: true
+    extra_dependencies: ["booktabs", "colortbl", "xcolor", "threeparttable", "threeparttablex"]
+header-includes:
+  - \usepackage{mathptmx}
+  - \usepackage{setspace}
+  - \usepackage[font={it, stretch=1}]{caption}
+  - \usepackage{tocloft}
+  - \usepackage{float}
+  - \usepackage{chngcntr}
+  - \counterwithin{figure}{section}
+  - \counterwithin{table}{section}
+  - \counterwithin{equation}{section}
+  - \renewcommand{\cftfigpresnum}{Figure }
+  - \renewcommand{\cfttabpresnum}{Table }
+  - \renewcommand{\cftfigaftersnum}{:\ }
+  - \renewcommand{\cfttabaftersnum}{:\ }
+  - \setlength{\cftfignumwidth}{5.5em}
+  - \setlength{\cfttabnumwidth}{5.5em}
+---
+
+\newpage
+# Abstract {-.unlisted}
+
+This thesis evaluates the economic and statistical robustness of cross-sectional carry and momentum strategies. It
+analyses 76 currencies ranging over multiple decades until 2025 and segmenting them into developed markets (DM) and emerging markets (EM). Strategy returns are calculated net of transaction costs and evaluated using various performance metrics and two-stage Fama-MacBeth regressions. The analysis finds that while the forward discount is a universally priced cross-sectional risk factor, its economic profitability is overwhelmingly driven by emerging markets (yielding 6.81% annualised) compared to an economically insignificant premium in the developed markets (0.40%). Moreover, this study presents the structural decay of the momentum anomaly in modern trading. Furthermore, findings in this thesis contradict previous literature by noting that carry and momentum fail to provide a universal cross-market hedge. Overall, currency anomalies cannot be evaluated in aggregate as factor survival, risk exposure and returns are dependent on their underlying market regimes and liquidity environments.
+
+
+\newpage
+\hypersetup{linkcolor=black}
+\tableofcontents
+\newpage
+\listoftables
+\newpage
+\listoffigures
+\hypersetup{linkcolor=blue}
+\newpage
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+library(tidyverse)
+library(kableExtra)
+library(ggplot2)
+
+# 1. Load Pre-Calculated Data
+thesis_data <- readRDS("thesis_data.rds")
+
+strategy_labels <- c(
+  "cs_carry" = "CS-Carry",
+  "cs_mom1"  = "CS-Momentum (1-Month)",
+  "cs_mom3"  = "CS-Momentum (3-Month)",
+  "cs_mom6"  = "CS-Momentum (6-Month)",
+  "cs_mom12" = "CS-Momentum (12-Month)"
+)
+
+strat_levels <- c(
+  "CS-Carry", 
+  "CS-Momentum (1-Month)", 
+  "CS-Momentum (3-Month)", 
+  "CS-Momentum (6-Month)", 
+  "CS-Momentum (12-Month)"
+)
+
+# Helper to automatically rename, factor, and sort dataframes
+format_strategy <- function(df) {
+  df |> 
+    mutate(Strategy = factor(recode(strategy, !!!strategy_labels), levels = strat_levels)) |> 
+    select(any_of("market_segment"), Strategy, everything(), -strategy) |>
+    arrange(across(any_of("market_segment")), Strategy)
+}
+
+# 2. Extract and pre-sort all tables ONCE globally
+currency_counts        <- thesis_data$currency_counts
+currency_summary_stats <- thesis_data$currency_summary_stats
+fmb_step2_results      <- thesis_data$fmb_step2_results
+correlation_results    <- thesis_data$correlation_results
+
+agg_performance        <- thesis_data$agg_performance |> format_strategy()
+dm_em_diff_ttest       <- thesis_data$dm_em_diff_ttest |> format_strategy()
+
+aligned_performance    <- thesis_data$aligned_performance |> format_strategy()
+t_test_results         <- thesis_data$t_test_results |> format_strategy()
+max_dd_table           <- thesis_data$max_dd_table |> format_strategy()
+
+# 3. Prepare Plot Data
+plot_global <- thesis_data$portfolios_global |>
+  filter(portfolio == "hml") |>
+  format_strategy() |>
+  group_by(Strategy) |> arrange(date) |>
+  mutate(Cumulative_Return = expm1(cumsum(ret_l)) * 100) |> ungroup()
+
+plot_aligned <- thesis_data$aligned_portfolios |>
+  format_strategy() |>
+  group_by(market_segment, Strategy) |> arrange(date) |>
+  mutate(Cumulative_Return = expm1(cumsum(ret_l)) * 100) |> ungroup()
+
+drawdown_data <- thesis_data$drawdown_data |> format_strategy()
+```
+
+
+# Introduction
+
+In the pursuit of global diversification and absolute returns, macroeconomic literature has traditionally analysed the foreign exchange (FX) market as a single, unified asset class. However, the modern global currency market is highly segmented. It comprises both highly efficient and heavily financialised developed economies and structurally distinct emerging markets. The persistence of substantial return premia across this heterogeneous currency universe has long posed a challenge to traditional economic models. This has led the literature to increasingly focus on systematic style factors such as carry and momentum, which capture broad and recurring patterns in exchange-rate risk premia [@lustig2011common; @menkhoff2012currency].
+
+Within this factor-based tradition, two styles are especially well established. The first is the carry trade, which captures the forward premium puzzle [@fama1984forward; @bansal2000forward]. This strategy exploits differences in interest rates across countries. An investor borrows in a low-interest-rate currency and invests in a high-interest-rate currency. The interest rate differential, also known as the "carry", forms essentially the profit. As demonstrated by @lustig2011common, the cross-sectional carry factor organises much of the variation in average currency returns. However, this strategy is vulnerable to sudden, substantial depreciations that can wipe out the interest-rate yield, a downside tail risk often referred to as the "peso problem" [@burnside2011].
+
+By contrast, momentum is fundamentally a different strategy. Originally documented in equities by @jegadeesh1993returns and extended to currencies by @menkhoff2012currency, instead of analysing interest rates, momentum evaluates past FX-rate performance. Trend-following investors buy currencies that have recently performed well and sell those that have performed poorly, with the hopes that past winners will continue to outperform past losers. Nevertheless, just as carry trades are exposed to crash risk, momentum strategies are vulnerable to sudden trend reversals and global liquidity shocks. Equally important to understanding these anomalies is the methodological distinction in their implementation: cross-sectional (CS) strategies compare currencies against each other at a single point in time to form portfolios, while time-series (TS) strategies evaluate each currency independently against its own historical performance.
+
+Because much of the prominent literature treats the global FX market in aggregate, broad generalisations often obscure these underlying market dynamics. For instance, studies such as @asness2013value evaluate global currencies collectively to argue that value (carry) and momentum are negatively correlated everywhere, theoretically forming a perfect global hedge. In addition, previous studies documenting these currency anomalies [@menkhoff2012currency; @asness2013value] rely on limited set of currencies and time-frames that ends before the 2010s. While recent literature, such as @viale_factor_2025, updates these datasets to investigate factor timing and reveals a broader aggregate decay in traditional momentum anomalies, the  geographical background of this decay remain unexplored. This creates an important limitation, as their findings were established before electronic matching systems became as widespread and efficient as they are today. The increasing adoption of these systems has substantially reduced transaction costs and eliminated some of the market inefficiencies that were present in earlier periods.
+
+This thesis aims to address this gap by dissecting the global FX market. It seeks to answer the core research question: Are carry and momentum returns still economically and statistically significant in both developed and emerging market currencies, and do they differ in magnitude, volatility, and risk profile? To test this, I systematically segment an extensive dataset of 76 currencies (spanning from early spot observations in 1971 through May 2025) strictly into developed markets (DM) and emerging markets (EM). To ensure real-world economic viability, I compute all strategy returns net of transaction costs using quoted bid-ask spreads.
+
+This thesis makes three main contributions. First, it provides out-of-sample evidence on the structural decay of the momentum anomaly. I demonstrate that in today’s electronic trading era, simple trend-following strategies have been largely arbitraged away in highly liquid developed markets, resulting in consistently negative returns. By contrast, momentum remains significantly priced within the less efficient emerging market universe. Second, I confirm that while the carry trade remains a universally priced risk factor, its global profitability is almost entirely driven by emerging markets. Although EM carry is highly exposed to "peso problem" crash risk [@burnside2011], drawdown analysis reveals a unique resilience and rapid mean-reversion that momentum strategies lack. Third, this study dismantles the universal hedging assumption proposed by @asness2013value. By examining different market segments, I show that carry and momentum exhibit a positive relationship in emerging markets, making both strategies vulnerable to simultaneous losses during periods of liquidity stress. At the same time, the two strategies behave as largely unrelated factors across different market segments. This limits the diversification benefits that would otherwise be expected from combining carry and momentum across markets.
+
+The remainder of this thesis is structured as follows. Section \@ref(metho) details the underlying mathematical and statistical methodology of the analyses performed including portfolio construction and the two-stage Fama-MacBeth [-@fama1973risk] regression. Section \@ref(data) describes the dataset and the applied cleaning procedures. Section \@ref(analysis) presents the empirical analysis and evaluates the performance, risk and robustness. Finally, Section \@ref(conclusion) concludes the thesis.
+
+
+\newpage
+# Methodology {#metho}
+
+
+The following section details the mathematical and statistical fundamentals for the analyses conducted. The entire analysis was completed using the programming software R and is available for download on (insert link). The chapter is divided into the following subsections:
+
+Firstly, subsection \@ref(log-ex) describes the procedures performed to calculate the returns. Secondly, subsection \@ref(portfolio) details the portfolio construction. Thirdly subsection \@ref(fama) describes the Two-Stage Fama-MacBeth regression used to test the asset pricing. Lastly subsection \@ref(risk) defines the metrics used to evaluate these portfolios' performance and downside risk profiles.
+
+
+## Currency Net Log Excess Returns {#log-ex}
+
+It is essential to consider real-world trading frictions when evaluating the economic significance of currency factor trading. In my approach I follow @lustig2011common, I take the perspective of an U.S. investor and calculate monthly net log excess returns. To achieve this the last observations for every currency each month for their bid and ask quotes are used to create a series.  Let $f_{i,t}^{b}$ and $f_{i,t}^{a}$ denote the log of the one-month $forward$ bid and ask quotes for currency $i$ at month $t$. Analogously, let $s_{i,t+1}^b$ and $s_{i,t+1}^a$ denote the log of the $spot$ bid and ask rates at month $t+1$. Therefore, the net log excess return $rx^l$ of an investor that goes $long$ in foreign currency is defined as 
+
+\begin{equation}
+rx_{i,t+1}^{l}=f_{i,t}^{b} - s_{i,t+1}^{a} .
+\end{equation}
+
+Equally, the net log excess return $rx^s$ of an investor that goes $short$ in foreign currency is
+
+\begin{equation} 
+rx_{i,t+1}^s=-f_{i,t}^{a}+s_{i,t+1}^{b}.
+\end{equation}
+
+These zero-cost positions represent by construction excess returns already net of transaction costs. Accounting for these spreads is critical. As demonstrated by @menkhoff2012currency, the profitability of momentum strategies are significantly impacted by adjusting for bid-ask spreads. These momentum strategies are often skewed toward currencies with higher transaction costs. Furthermore, as indicative quotes are generally wider that actual inter-dealer spreads [@lyons2001microstructure], utilising the the full quoted bid-ask spread establishes a strict, conservative lower bound on the profitability of the investment strategies. 
+
+
+## Portfolio Construction (Cross-Sectional Sorts) {#portfolio}
+
+At the end of each month $t$, the available currencies are ranked based on their respective signals. For the Cross-Sectional Carry (CS-Carry) strategy, currencies are sorted by their forward discount [@lustig2011common]. Contrary, for the Cross-Sectional Momentum (CS-Momentum) strategies, they are sorted by their past $m$-month cumulative return [@menkhoff2012currency].
+
+The currencies are then allocated into five equally weighted portfolios (quintiles), where Portfolio 1 contains the currencies with the lowest signals and Portfolio 5 contains those with the highest. Although, @lustig2011common and @menkhoff2012currency both construct six portfolios, due to the different number of currencies included in the data, I follow @viale_factor_2025, who used the same data and constructed five portfolios. The High-Minus-Low (HML) factor return is constructed by taking a long position in Portfolio 5 and a short position in a Portfolio 1 [@lustig2011common]. 
+
+The cross-sectional returns for each portfolio $p$ are computed by equal-weighting the simple returns of the $N_{p}$ constituent currencies (utilising the long net excess return $rx_{i,t+1}^l$ defined in Section \@ref(log-ex)), which are then converted back to log returns:^[This two-step conversion aligns with standard portfolio mechanics and avoids the mathematical bias for directly averaging log returns [@walter2022nonstandard]]
+
+
+\begin{equation}
+rx_{p,t+1}=\ln\left(\frac{1}{N_{p}}\sum_{i=1}^{N_{p}}\exp(rx_{i,t+1}^l)\right)
+\end{equation}
+
+
+
+## Two-Stage Fama-MacBeth Regression {#fama}
+
+To formally test whether the constructed strategies capture priced risk factors across the currency spectrum, I employ a two-stage Fama-MacBeth ordinary least squares (OLS) regression framework [@fama1973risk; @fama1992cross]. Instead of sorting currencies into portfolios, this approach utilises the full universe of individual currencies to avoid information loss.
+
+In the first step, a cross-sectional regression is performed at each month $t$ to estimate predictive power of the strategy characteristics:
+
+\begin{equation}
+rx_{i,t+1}=\gamma_{0,t}+\lambda_{t}C_{i,t}+\epsilon_{i,t+1}
+\end{equation}
+
+where $rx_{i,t+1}$ denotes the log excess return of currency $i$ at month $t+1$, $C_{i,t}$ represents the observable characteristics (the forward discount for carry or the prior return for momentum) known at the time $t$, $\gamma_{0,t}$ is the cross-sectional intercept and $\lambda_t$ denotes the estimated slope coefficient representing the marginal premium associated with the characteristics. 
+
+In the second step, the final premium $\lambda$ is calculated as the time-series average of these monthly cross-sectional estimates [@lustig2011common]:
+
+\begin{equation}
+\lambda = \frac{1}{T}\sum_{t=1}^T\lambda_t
+\end{equation}
+
+Statistical significance is then determined using standard t-tests on the aggregated $\lambda$ values to evaluate whether the risk factor is consistently priced in the cross-section of currency returns.
+
+
+## Performance and Risk Evaluation {#risk}
+
+In order to evaluate the economic significance of the strategies across both developed (DM) and emerging (EM) market segments, in line with standard conventions in the currency anomaly literature [@burnside2007returns; @menkhoff2012currency], I calculate the following performance and downside risk metrics on a sample of $T$ months:
+
+*   **Annualised Mean Return:** The strategy's average continuous excess return, calculated on an annual basis. Let $rx_{p,t}$ denote the monthly net log excess return of portfolio $p$. To reflect actual portfolio growth, this is converted to an annualised simple return:
+
+\begin{equation} 
+\mu_{ann} = \left[ \exp\left( 12 \times \frac{1}{T}\sum_{t=1}^{T}rx_{p,t} \right) - 1 \right]
+\end{equation}
+
+*   **Annualised Volatility:** The standard deviation of the strategy's returns, annualised to represent the baseline level of risk. The calculation is performed on the discrete simple returns, where $R_{p,t} = \exp(rx_{p,t})-1$:
+
+\begin{equation}
+\sigma_{ann} = \sqrt{12} \times \sqrt{\frac{1}{T-1}\sum_{t=1}^{T}(R_{p,t} - \bar{R}_{p})^2}
+\end{equation}
+
+*   **Sharpe Ratio:** The ratio of the annualised mean return to the annualised volatility, measuring the core risk-adjusted return on the portfolio. Because $rx_{p,t}$ is already constructed as a zero-cost net excess return, the risk-free rate is implicitly accounted for simplifying the ratio to [@lustig2011common]:
+
+\begin{equation}
+SR = \frac{\mu_{ann}}{\sigma_{ann}}
+\end{equation}
+
+*   **Maximum Drawdown:** The largest peak-to-trough drop in the portfolio's equity curve over the sample period, explicitly capturing structural crash risk and left-tail exposure characteristic of currency factors. Let $W_t$ denote the cumulative wealth index of the strategy at time $t$, and let $P_t = \max _{T \leq t}W_T$ denote the running historical peak up to the time $t$. The drawdown at the time $t$ is defined as the percentage deviation of the wealth index from its preceding peak: $DD_t = \frac{W_t-P_t}{P_t}$. The maximum drawdown is the most severe decline observed across the entire sample^[As the portfolio's current wealth $W_t$ can never exceed its rolling historical peak $P_t$, the numerator ($W_t - P_t$) is strictly non-positive, thus drawdowns are mathematically represented as negative values. Therefore it is necessary to use the minimum function ($min$) to identify the largest magnitude of loss.] [@wall_street_prep_maximum_2024]:
+
+\begin{equation}
+MDD = \min_{t \in T} DD_t
+\end{equation}
+
+*   **Strategy Correlations:** The Pearson correlation coefficient ($\rho$) between the monthly returns of two competing strategies ($A$ and $B$), is calculated as: 
+
+\begin{equation}
+\rho_{A,B} = \frac{\sum_{t=1}^{T}(rx_{A,t} - \bar{rx}_{A})(rx_{B,t} - \bar{rx}_{B})}{\sqrt{\sum_{t=1}^{T}(rx_{A,t} - \bar{rx}_{A})^2\sum_{t=1}^{T}(rx_{B,t} - \bar{rx}_{B})^2}}
+\end{equation}
+
+This metric assesses the potential diversification benefits across market regimes.^[In empirical research, carry and momentum strategies are frequently found to have low or negative correlations. Carry trades typically perform well in low-volatility environments and are subject to sudden crash risk, while momentum strategies often thrive during prolonged market trends and crisis periods, offering natural diversification [@asness2013value; @burnside2011].]
+
+
+\newpage
+# Data {#data}
+
+The primary dataset utilised for this analysis comprises daily spot and one-month forward exchange rates for 76 selected currencies, mirroring the selection by Bartram et al. (2025) and was obtained from Datastream. The raw sample period spans between 4 January 1971 and 30 May 2025. To shift this analysis from a theoretical framework to a fully implementable, empirical study, the raw dataset is subjected to thorough, industry-standard filtering procedures. Firstly, to ensure data consistency, the data is filtered to drop erroneous quotes where the bid price is strictly higher than the ask price. These represent impossible market conditions and distort transaction cost calculations. Secondly, in accordance with Lustig et al. (2011), specific observations for certain currencies are manually excluded from the analysis due to large failures in covered interest rate parity. These exclusions are: South African Rand (July to August 1985); Malaysian Ringgit (August 1998 to June 2005); Indonesian Rupiah (December 2000 to May 2007); Turkish Lira (October 2000 to November 2001); United Arab Emirates Dirham (June to November 2006).
+
+Finally, to maximise the total observation count and improve validity, European legacy currencies are retained up until their respective country’s exact date of adoption of the Euro. These time series are then dropped the exact month they cease trading and stop producing valid forward quotes. To ensure the early market segmented samples remain historically accurate, these legacy currencies are mapped to Developed or Emerging Markets respectively based on their pre-Euro economic classification. The aggregate effect of these data availability constraints, crisis exclusions, and legacy currency phase-outs on the cross-sectional sample size is illustrated in Figure \@ref(fig:fig-currency-count). Furthermore to eliminate high-frequency noise and align with standard macroeconomic reporting, the prices are extracted from the last trading day of the month.
+
+All exchange rates are standardised from the perspective of a U.S. investor; therefore, the data are expressed as direct quotes representing the amount of foreign currency per U.S. dollar. These methodological filters are standard practice for currency factor models. Table 1 provides the descriptive statistics for the final filtered dataset, detailing the annualised mean, volatility, and distribution of the currencies over the sample period. To maintain sufficient cross-sectional coverage during portfolio formation, strategies are implemented only for months for which forward data are available for at least 20 currencies. Consequently, the evaluation of the aggregate global portfolios begins in May 1990. Furthermore, before the mid-to-late 1990s, forward markets for emerging market (EM) currencies lacked sufficient historical liquidity. Therefore, to prevent structural regime bias and ensure strict time-series alignment for the comparative analysis, the dataset is restricted to begin on 1 June 1996 for all subsequent DM and EM portfolio evaluations. A comprehensive overview of the descriptive statistics for all 76 individual currencies, detailing their annualised mean, volatility, and specific sample periods, is provided in Table \@ref(tab:tab-descriptive-stats) in the Appendix.
+
+
+```{r fig-currency-count, echo=FALSE, out.width="100%", fig.width=8, fig.height=4, fig.align='center', fig.cap="Number of currencies with available net excess log return observations at each month-end from May 1990 to May 2025. The sample expands significantly over the timeframe, reflecting increased data availability and liquidity in global forward markets. Sharp declines correspond to periods of excluded data due to bid-ask inconsistencies or currencies ceasing independent trading upon Euro adoption. Stepwise increases primarily capture the progressive integration of emerging market economies into the tradable universe.", fig.scap="Number of Currencies in the Sample Over Time", fig.pos="H"}
+ggplot(currency_counts, aes(x = date, y = num_currencies)) +
+  geom_line(color = "#4292C6", linewidth = 1) + 
+  labs(title = "Number of Currencies in the Sample Over Time", x = "Date", y = "Amount of currencies") + theme_minimal()
+```
+\newpage
+# Empirical Analysis {#analysis}
+
+To evaluate the results of this analysis, Subsection \@ref(aggret) analyses the baseline aggregate portfolio performance without the segregation of the different markets, Subsection \@ref(dmem) presents the different performance of the strategies in developed and emerging markets, Subsection \@ref(dd) briefly depicts the tail risks and drawdown analysis, Subsection \@ref(corr) analyses the correlation of the strategies in the two markets and lastly Subsection \@ref(famares) elaborates the complex economic test of these analyses using the Fama-MacBeth Regression.
+
+In the following section Emerging and Developed Markets are abbreviated as EM and DM respectively, cross-sectional factors are abbreviated as CS, while Mom refers to Momentum factors and is followed by the corresponding formation horizon (e.g., CS-Mom-3M refers to the cross-sectional momentum strategy based on returns over the preceding three months).
+
+## Aggregate Portfolio Performance {#aggret}
+
+Firstly, I analyse the returns of the different strategies with every currency regardless of their respective market classifications (hereafter referred to as the "global market"). Consequently, this allows me to have a baseline that can later be used to compare the segregated markets with. The results of the cumulative returns are visualised in Figure \@ref(fig:fig-aggregate) and in Table \@ref(tab:tab-aggregate-metrics). These two visualisations are in line with previous literature [@bartram2025mispricing; @viale_factor_2025] where the cross-sectional carry strategy significantly outperforms every momentum strategy.
+
+```{r tab-aggregate-metrics}
+agg_performance |>
+  kable(
+    col.names = c("Strategy", "Ann. Return (%)", "Ann. Volatility (%)", "Sharpe Ratio"),
+    caption = "Aggregate Performance Metrics (Net of Costs)",
+    align = "lccc", booktabs = TRUE
+  ) |>
+  kable_styling(latex_options = c("striped", "hold_position"), full_width = FALSE, font_size = 12) |>
+  footnote(general = "The table reports annualised return, annualised volatility, and Sharpe ratio for the cross-sectional (CS) carry and momentum strategies. Results are based on monthly net excess returns from one-month forward contracts and spot rates, covering the period from June 1990 to May 2025.",
+           general_title = "Note:",
+           footnote_as_chunk = TRUE,
+           escape = FALSE,
+           threeparttable = TRUE)
+
+
+```
+
+The CS-carry strategy delivers the highest annualised return (3.97%) while also maintaining the lowest annualised volatility (7.04%). As a result, the strategy retains an attractive and comparatively high Sharpe ratio of 0.56. Regarding the momentum strategies, they significantly underperform carry on a risk-adjusted basis. The 1-Month strategy yields the highest return among the momentum strategies with an annualised return of 1.96% while its Sharpe Ratio is a mere 0.24. Analogous to the findings of @viale_factor_2025, the 12-Month momentum strategy delivers negative annualised returns and accordingly has a negative Sharpe ratio as well. 
+It has to be noted that these findings differ from those of @menkhoff2012currency as their sample includes only 48 countries currencies. As @viale_factor_2025 points out these discrepancies are a result from the greater number of developing countries' currencies being included in the dataset. These currencies historically exhibit higher interest rates and thus strongly influence the profitability of the carry factor, while the aggregate momentum premia appear to be in turn significantly diluted.
+
+Figure \@ref(fig:fig-aggregate) illustrates this significant difference in the cumulative returns of the strategies by taking the sum of the net excess log returns and converting them back into a true cumulative simple return. 
+
+
+```{r fig-aggregate, echo=FALSE, out.width="100%", fig.width=8, fig.height=6, fig.align='center', fig.cap="Cumulative simple returns (%) of the currency strategies in the global market. The figure displays the cumulative performance of the cross-sectional carry and momentum strategies with varying formation windows. Returns are compounded from monthly net excess returns from one-month forward contracts and spot rates over the period from June 1990 to May 2025.", fig.scap="Cumulative simple returns", fig.pos="H"}
+ggplot(plot_global, aes(x = date, y = Cumulative_Return, color = Strategy)) +
+  geom_line(linewidth = 0.8) + theme_minimal() +
+  labs(title = "Cumulative Simple Returns of Currency Strategies", x = "Date", y = "Cumulative Simple Return (%)") +
+  theme(legend.position = "bottom", legend.title = element_blank()) + 
+  guides(color = guide_legend(nrow = 2))
+```
+
+\newpage
+## Market Segmentation: Developed vs. Emerging Markets {#dmem}
+
+To assess whether the aggregate performance documented above is broadly shared across currencies or primarily attributable to a particular market segment, the sample is divided into developed market (DM) and emerging market (EM) currencies. This segmentation enables a systematic comparison of carry and momentum performance across the two currency groups and provides insight into the extent to which each market contributes to the aggregate strategy returns. Figure \@ref(fig:fig-split-returns) illustrates pronounced differences in the cumulative return paths of the strategies across developed and emerging markets.
+
+```{r fig-split-returns, echo=FALSE, out.width="100%", fig.width=8, fig.height=6, fig.align='center', fig.scap="Cumulative Returns: Developed (DM) vs. Emerging Markets (EM)", fig.cap="Cumulative simple returns (%) comparing Developed (DM) and Emerging Markets (EM) from June 1996 to May 2025. The chart highlights the substantial divergence in strategy profitability across different macroeconomic regimes.", fig.pos="H"}
+ggplot(plot_aligned, aes(x = date, y = Cumulative_Return, color = Strategy)) +
+  geom_line(linewidth = 0.8) +
+  facet_wrap(~ market_segment, ncol = 1, scales = "free_y") +
+  theme_minimal() + labs(title = "Cumulative Returns: Developed (DM) vs. Emerging Markets (EM)", x = "Date", y = "Cumulative Return (%)") +
+  theme(legend.position = "bottom", legend.title = element_blank(), strip.text = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2))
+```
+
+A pronounced difference emerges in the strategy returns across the two market segments. While the CS-carry strategy yields a cumulative simple return of about 13% for the developed market currencies at the end of the sample period, the same strategy yields almost 600% for emerging market currencies. Although less pronounced, a similar pattern is observed for the CS-momentum strategies. 
+
+Table \@ref(tab:tab-aligned-metrics) presents these differences clearly. The EM carry yields a massive 6.81% annualised return while DM carry yields only an economically insignificant return of 0.40% with a significantly lower Sharpe ratio (0.06 vs. 0.66 in EM). These results are in line with @burnside2007returns where they have proven that including emerging market currencies in the portfolios "substantially increases the Sharpe ratio associated with the carry trade". Even earlier than that @bansal2000forward find that the "forward premium puzzle" behaves differently in emerging versus developed economies. These findings clearly indicate the importance to include emerging markets in portfolios in order to increase the performance. 
+
+However it has to be noted, that these EM currencies are also bearing an overall higher risk. The annualised volatility for emerging market currencies range between 10.27% and 14.93% whereas for developed market currencies the highest annualised volatility is 7.97%. Nevertheless, the return premia in EM are so large that they overcompensate for their volatility. As a result, the EM strategies' Sharpe ratios are overall better than those of the DM's. @lustig2011common and @burnside2011 both noted that high-yielding currencies that drive the carry trade inherently also carry higher crash risk and volatility, which is perfectly reflected in the EM data below ^[In academic literature, this specific EM crash risk is referred to as a "Peso Problem", where investors demand higher premia to hold EM currencies as a compensation for rare, but devastating, currency devaluations [@burnside2011]].
+
+
+```{r tab-aligned-metrics}
+aligned_performance |>
+    kable(
+    col.names = c("Market", "Strategy", "Ann. Return (%)", "Ann. Vol (%)", "Sharpe Ratio"),
+    caption = "Time-Aligned Performance Metrics",
+    align = "llccc", booktabs = TRUE
+  ) |>
+  kable_styling(latex_options = c("striped", "hold_position"), full_width = FALSE, font_size = 12)|>
+  footnote(general = "The table reports annualised performance metrics for strategies across Developed (DM) and Emerging (EM) markets from June 1996 to May 2025. Returns are calculated net of transaction costs.",
+           footnote_as_chunk = TRUE,
+           escape = FALSE,
+           threeparttable = TRUE)
+```
+
+In addition, the results are in line with the findings of @menkhoff2012currency who found that momentum portfolios are skewed towards EM currencies. However this conclusion is from data that is over 10 years old and not as extensive as the dataset used in this study. Figure \@ref(fig:fig-split-returns) shows how the momentum returns virtually flatline in EM while in the DM every CS-momentum strategy exhibits negative annualised returns. This can be explained by the liquidity and electronic efficiency in developed currency markets ^[The widespread adoption of electronic matching systems (EBS and Reuters) in the late 1990s and 2000s drastically reduced transaction costs and arbitrage opportunities. As a result they have effectively wiped out simple trend-following, momentum, profits in developed markets [@menkhoff2012currency]] and the decay and the disappearance of traditional momentum anomalies [@okunev2003momentum; @menkhoff2012currency; @viale_factor_2025]. 
+
+Table \@ref(tab:tab-timeseries-ttest) illustrates whether the annualised returns observed are statistically reliable or merely sampling noise. The table evaluates whether each strategy's mean return is statistically distinguishable from zero within its respective market segment ($H_0:\mu=0$).
+EM CS-carry is the only strategy with robust positive excess returns and is thus highly statistically significant at conventional levels ($t=3.55, p<0.001$). DM CS-carry is statistically indistinguishable from zero ($t=0.32, p=0.748$) which proves that DM carry delivers no robust excess return over cash after transaction costs. When looking at the CS-momentum strategies it can be said that the DM momentum point estimates are not just economically negative, but the 1-Month ($t=-1.83, p=0.068$) and 6-Month ($t=-1.78, p=0.076$) strategies also display marginal statistical significance at the 10% level for the loss-making trajectories. While the 3-Month CS-momentum strategy for the EM shows marginal significance at the 10% level ($t=1.72, p=0.086$) there is a general absence of robust standalone statistical power for momentum strategies once spreads are deducted.
+
+Although there is a broad sign reversal across the market segments (positive $t$-statistics in EM vs. negative in DM), both segments show negative $t$-statistics at the 12-month horizon confirming the factor decay over longer formation periods.
+
+```{r tab-timeseries-ttest}
+t_test_results |>
+  mutate(t_stat = round(t_stat, 2), p_value = round(p_value, 3)) |>
+  kable(
+    col.names = c("Market", "Strategy", "t-statistic", "p-value"),
+    caption = "Time-Series t-tests of High-Minus-Low Portfolios",
+    align = "llcc", booktabs = TRUE) |> 
+  kable_styling(latex_options = c("hold_position", "striped"), full_width = FALSE, font_size = 12)|>
+  footnote(general = "The table presents t-statistics and p-values testing the null hypothesis that the mean annualised return equals zero ($H_0: \\mu = 0$).", 
+           escape = FALSE,
+           footnote_as_chunk = TRUE,
+           threeparttable = TRUE)
+```
+
+The paired $t$-test over the synchronised sample period (1996-2025)^[As Detailed in Section \@ref(data), the sample is restricted to begin in June 1996 to reflect the historical lack of tradable forward market liquidity in emerging markets prior to this date.] for testing whether the difference in returns between DM and EM is statistically significant ($H_0: \mu_{DM} - \mu_{EM} = 0$) is presented in Table \@ref(tab:tab-paired-ttest). The most important finding in the $t$-test is regarding the CS-carry strategy. The annualised return difference for it is -6.19% with a $t$-statistic of -2.97 and a p-value of 0.003. These results are highly significant at the 1% level ($p<0.01$), formally rejecting the null-hypothesis that DM and EM carry trades offer comparable profitability and thus confirming that the global carry factor is substantially concentrated in emerging markets [@bansal2000forward; @bartram2025mispricing].
+
+Furthermore it can be observed that the three short-to-medium term (1, 3, 6 months) momentum strategies show significant differences with the DM under-performing relative to EM at the 5% level ($p<0.05$). This is the result from the observations from Table \@ref(tab:tab-aligned-metrics), where DM momentum is strictly negative while EM momentum maintained positive returns. The resulting performance gap is economically large and statistically robust as seen in the $t$-statistics and p-values.
+
+Finally the cross-market return spread almost completely diminishes for the CS-momentum 12-month strategy. The difference or rather the lack thereof is not due to an improvement in the DM but rather because both market segments are subjects to the factor exhaustion and long-horizon reversal (DM:-1.12%, EM:-1.91%) [@jegadeesh1993returns]. As a result the cross-market spread can be reduced to statistical noise.
+
+```{r tab-paired-ttest}
+dm_em_diff_ttest |>
+  mutate(mean_diff = round(mean_diff, 2), t_stat = round(t_stat, 2), p_value = round(p_value, 3)) |>
+  kable(
+    col.names = c("Strategy", "Ann. Difference (DM - EM) (%)", "t-statistic", "p-value"),
+    caption = "Paired t-tests for Difference in Returns (DM vs. EM)",
+    align = "lccc", booktabs = TRUE) |> 
+  kable_styling(latex_options = c("striped", "hold_position"), full_width = FALSE, font_size = 12)|>
+  footnote(general = "The table presents paired t-tests evaluating the null hypothesis that the difference in mean returns between Developed and Emerging markets equals zero ($H_0: \\mu_{DM} - \\mu_{EM} = 0$).", 
+           escape = FALSE,
+           footnote_as_chunk = TRUE,
+           threeparttable = TRUE)
+```
+
+
+## Tail Risk and Drawdown Analysis {#dd}
+
+While Subsection \@ref(dmem) details the performance of the different market segments, in order to understand the full impact of the different market in FX trading, the underlying risks have to evaluated as well. The following subsection presents the maximum drawdowns by strategy and market segment. The most  notable finding are the severe momentum crash risks across both markets. As Table \@ref(tab:tab-max-drawdown) depicts, momentum strategies suffer pronounced peak-to-trough losses exceeding -60% or even in one case -70%, which exposes the strategy's trend reversal vulnerability. Contrary, CS-carry strategy in both market segments record the least maximum drawdown with -35.32% and -24.05% for DM and EM respectively. The EM carry's significantly lower drawdown compared to the CS-momentum in the same market proves that CS-carry generates superior risk-adjusted returns that are supported by better downside protection.
+
+Developed markets feature considerable losses with every CS-momentum strategy recording a maximum drawdown worse than -57%, aligning with the negative annualised returns observed in Section \@ref(dmem), thus proving that DM is subject to a higher momentum crashes.
+
+```{r tab-max-drawdown}
+max_dd_table |>
+mutate(max_drawdown = round(max_drawdown, 2)) |>
+  kable(
+    col.names = c("Market", "Strategy", "Max Drawdown (\\%)"),
+    caption = "Maximum Drawdowns by Strategy",
+    align = "llc", booktabs = TRUE) |> 
+  kable_styling(latex_options = c("striped", "hold_position"), full_width = FALSE, font_size = 12)|>
+  footnote(general = "Maximum drawdown represents the largest peak-to-trough drop in the cumulative simple return of each strategy from June 1996 to May 2025.",
+           escape = FALSE,
+           footnote_as_chunk = TRUE,
+           threeparttable = TRUE)
+```
+
+Figure \@ref(fig:fig-underwater-drawdown) presents the underwater equity curves for each strategy, illustrating not only the absolute depth of the historic losses, but also the duration of the recovery periods, effectively measuring how long an investor's capital remains "underwater". In developed markets, the 2008 global financial crisis triggered a severe structural break across all strategies. Most notably, none of the DM strategies ever return to the 0% high-water mark following this crisis. This visually confirms the permanent decline of traditional currency anomalies in these markets.
+
+In contrast, when observing the emerging market segment the effects of the financial crisis are not as substantially profound. It can be seen that only the 12-month CS-momentum strategy suffered significant and continuing drawdowns, whereas CS-carry demonstrates a remarkable resilience. While the strategy is affected by sharp "peso problem" drops, it rapidly mean-reverts and frequently returns to the 0% line throughout the sample. This swift recovery mechanism directly explains the strategy's stronger risk-adjusted performance as documented in Section \@ref(dmem).
+
+Finally, the figure highlights that momentum strategies are particularly vulnerable to prolonged periods of substantial losses [@asness2013value]. This is most severe in the EM 12-month MOM, which plunges below -70% after 2010. Rather than experiencing short-lived crashes, the momentum factor exhibits years-long sustained drawdowns without reaching new peaks.
+
+
+```{r fig-underwater-drawdown, echo=FALSE, out.width="100%", fig.width=8, fig.height=6, fig.align='center', fig.scap="Strategy Drawdowns Over Time (Underwater Chart)",fig.cap="Strategy drawdowns over time (underwater chart) for Developed and Emerging Markets. The chart illustrates the percentage decline from the running historical peak for each strategy, capturing structural crash risks and recovery durations.", fig.pos="H"}
+ggplot(drawdown_data, aes(x = date, y = drawdown, color = Strategy)) +
+  geom_line(linewidth = 0.8, alpha = 0.8) +
+  facet_wrap(~ market_segment, ncol = 1, scales = "free_y") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(title = "Strategy Drawdowns Over Time", x = "Date", y = "Drawdown (%)") +
+  theme_minimal() +
+  theme(legend.position = "bottom", legend.title = element_blank(), strip.text = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2))
+```
+
+## Strategy Correlation and Diversification {#corr}
+
+@asness2013value argue that value and momentum are negatively correlated across asset classes thus creating a natural hedge.^[While @asness2013value evaluate broad asset classes, they acknowledge in their study that value and momentum returns have historically been stronger in less liquid, emerging markets (citing Rouwenhorst (1998), Erb and Harvey (2006), Griffin, Ji, and Martin (2003)). However, they do not break down the cross-market correlation between DM and EM currencies explored in this section] In their study they establish the value-momentum hedge for different global asset classes including FX, but they do not segment currencies into DM and EM to analyse how this correlation behaves under different market regimes. In order to evaluate whether the the traditional diversification benefits of combining carry and momentum hold within segmented currency markets, I construct an extensive Pearson correlation matrix with the different currency market segments and their strategies. This allows to inspect the correlation not only of the different factors intra-market but also cross-market segments. Figure \@ref(fig:fig-correlation-heatmap) depicts the Pearson's correlation coefficients in % as a heat map for the different correlations.
+
+The most notable finding is that in DM the correlation between the carry and any momentum strategy is virtually zero. This suggests that in developed currency markets these two strategies - that according to @asness2013value should be negatively correlated for equity - act as orthogonal or independent factors. In standard portfolio theory such an independence is beneficial for the diversification and for the risk-adjusted returns of a portfolio. Nevertheless, when taken into account the negative returns for DM momentum from section \@ref(dmem), combining carry and momentum in DM effectively dilutes the portfolio rather than enhancing it, thus losing the benefits from the theory and not creating a hedge.
+
+
+```{r fig-correlation-heatmap, fig.cap="Cross-Market Correlation Matrix of Currency Strategies. The heatmap displays pairwise Pearson correlation coefficients (in \\%) between the Carry and Momentum strategies across Developed (DM) and Emerging (EM) markets.", fig.scap="Cross-Market Correlation Matrix", out.width="75%", fig.width=6, fig.height=6, fig.align="center", fig.pos="H"}
+cor_data <- thesis_data$aligned_portfolios |>
+  format_strategy() |>
+  dplyr::mutate(
+    Short_Strategy = stringr::str_replace_all(as.character(Strategy),
+                                              c("CS-Carry" = "Carry","CS-Momentum \\(" = "MOM-","-Month\\)" = "M")),
+    Plot_Name = paste(market_segment, Short_Strategy, sep = " ")
+  ) |>
+  dplyr::mutate(Plot_Name = factor(Plot_Name, levels = unique(Plot_Name))) |>
+  dplyr::select(date, Plot_Name, ret_l) |>
+  tidyr::pivot_wider(names_from = Plot_Name, values_from = ret_l) |>
+  dplyr::select(-date) |>
+  cor(use = "pairwise.complete.obs")
+
+corrplot::corrplot(
+  cor_data,
+  method = "color",
+  type = "upper",
+  addCoef.col = "black",
+  addCoefasPercent = TRUE,
+  tl.col = "black",
+  tl.srt = 45,
+  number.cex = 0.8,
+  diag = FALSE,                
+  col = colorRampPalette(c("#de0a26", "white", "#5bb450"))(200)
+)
+```
+
+On the contrary the EM shows moderate correlation between CS-carry and CS-momentum strategies within the market segment with Pearson's correlation coefficients ranging from 0.35 to 0.44. This indicates an intra-market co-movement and thus a failure of proper independence necessary to create the diversification needed for a functioning hedge. Economically, this positive co-movement arises because momentum strategies in emerging markets often target the same high-yield currencies as carry trades [@menkhoff2012currency]. As a result, during global liquidity shocks and periods of high risk aversion [@lustig2011common], both strategies suffer simultaneously from the "peso problem" drawdowns [@burnside2011].
+
+Furthermore, the heat map also reveals a substantial finding; cross-market hedging is not feasible. The correlation between EM carry and any DM momentum is near zero with the Pearson's correlation coefficient ranging between 0.01 and -0.08, proving that they are nearly completely independent. To effectively offset a severe crash, an investor requires a strongly negative correlation—an asset that reliably appreciates when the other collapses. A correlation near zero means DM momentum acts randomly relative to EM carry, therefore failing to create a reliable downside protection. This finding is substantial as it dismantles the expectations of a global investor who might seek to buy safe-haven DM trends during a crisis to hedge the crash risks of EM carry.
+
+## Fama-MacBeth Cross-Sectional Regression Results {#famares}
+
+Lastly, I conduct two-stage Fama-MacBeth [@fama1973risk; @fama1992cross] regressions to formally test whether the cross-sectional carry and momentum strategies represent robust predictive characteristics rather than temporary market inefficiencies. This test evaluates whether the specific signals (forward discount and past 1-month return) robustly predict future currency returns. Each anomaly is assessed on its own to understand its impact on pricing. Table \@ref(tab:tab-fama-macbeth) presents the estimated marginal premium ($\lambda$) for each factor across the segmented markets. For clarity and conciseness, the cross-sectional pricing analysis focuses on the 1-month momentum strategy, as it represents the most responsive and profitable short-term momentum strategy across the sample. If the strongest signal fails, the weaker long-term horizons inherently fail as well.
+
+The results of the analysis reveal substantial $t$-statistics for both CS-carry with 4.93 and 5.81 for DM and EM respectively, both yielding a $p$-value below 0.001, thus making them highly statistically significant. This decisively confirms that the forward discount is a universally robust predictor of future returns. Regardless of the underlying market, investors consistently demand a premium for holding high-yielding currencies.
+At first glance Table \@ref(tab:tab-fama-macbeth) presents a counter-intuitive result for the estimated marginal premium $\lambda$. The marginal premium is higher in DM (0.9016) than in EM (0.5971), even though EM delivers significantly higher total returns. However, the characteristic-based regression, as explained in Section \@ref(fama), calculates $\lambda$ as the marginal premium for a 1% increase in the interest rate differential. If the different macroeconomic environments of the two market segments are taken into account, the results can be interpreted more comprehensively. In developed markets, interest rate differentials tend to be narrower, making a one-percentage-point yield difference a relatively more economically significant pricing signal, which is consistent with a steeper pricing slope observed in the DM. By contrast, emerging markets are generally characterised by structurally higher and more heterogeneous inflation, resulting in wider baseline interest rate differentials. A one-percentage-point yield difference therefore has less relative economic significance within the EM cross-section, proving a possible explanation for the flatter pricing slope. Consequently, EM carry may outperform in terms of total performance not because of a higher marginal premium, but rather due to the wider range of available yield differentials across EM currencies.
+
+
+```{r tab-fama-macbeth,fig.pos="H"}
+fmb_step2_results |>
+  mutate(
+    carry_fmb_gamma = round(carry_fmb_gamma, 4), carry_t_stat = round(carry_t_stat, 2),
+    carry_p_value = ifelse(carry_p_value < 0.001, "<0.001", as.character(round(carry_p_value, 4))),
+    mom1_fmb_gamma = round(mom1_fmb_gamma, 4), mom1_t_stat = round(mom1_t_stat, 2),
+    mom1_p_value = ifelse(mom1_p_value < 0.001, "<0.001", as.character(round(mom1_p_value, 4)))
+  ) |>
+  kable(
+    col.names = c("Market", "$\\lambda$", "t-stat", "p-value", "$\\lambda$", "t-stat", "p-value"),
+    caption = "Fama-MacBeth Cross-Sectional Regression Results",
+    align = "lcccccc", booktabs = TRUE,
+    escape = FALSE
+  ) |>
+  kable_styling(latex_options = c("striped", "hold_position"), full_width = FALSE, font_size = 12) |>
+  add_header_above(c(" " = 1, "CS-Carry" = 3, "MOM-1M" = 3))|> 
+  footnote(general = "$\\\\lambda$ represents the estimated time-series average of the cross-sectional marginal premium. Signals are evaluated univariately.", 
+           escape = FALSE, 
+           footnote_as_chunk = TRUE,
+           threeparttable = TRUE)
+```
+More interestingly, the table reveals a substantial divergence between the developed and emerging currency market when looking at the 1-month momentum strategy. The momentum signal in the developed market yield a $\lambda$ of effectively zero (0.0037) while also being statistically insignificant ($p$ = 0.8836). Meanwhile the momentum signals for the emerging market yields a high marginal premium with a $\lambda$ of 0.1117 and also being statistically significant ($t$ = 3.79, $p$ < 0.001).
+
+These results mathematically prove that in highly liquid, modern developed markets, simple trend-following characteristics have been completely arbitraged away [@menkhoff2012currency], whereas in less efficient, emerging markets they remain fully intact and yield robust, higher marginal premia.
+
+\newpage
+# Conclusion {#conclusion}
+
+This thesis set out to delve deeper into the robustness of carry and momentum strategies in FX-markets, examining whether these strategies are economically and statistically significant in developed and emerging market currencies. Rather than treating global currencies as a homogeneous asset class, this approach segregates the data into developed and emerging markets across an extensive 76-currency sample ranging from 1971 until 2025 to test for structural factor decay.
+
+The results from the Fama-MacBeth regressions demonstrate that carry remains a universally priced cross-sectional risk factor regardless of the underlying FX market's economics. This further confirms the foundational theories of @lustig2011common. Contrasts arise in the economic magnitude of the carry trade between the two markets. The global profitability of carry trade is almost entirely driven by emerging markets with annualised yields reaching 6.81%, while the developed market yields an economically insignificant return of 0.40% after transaction costs. While the underwater drawdown analysis of this thesis illustrates how in emerging markets the carry trade is prone to severe, left-tail "peso problem" crashes also documented by @burnside2011, nevertheless it exhibits a strong resilience and rapid mean-reversion that momentum strategies lack.
+
+The thesis presents profound contradictions with previous literature. While @menkhoff2012currency present how cross-sectional momentum is a highly profitable, global FX strategy, the data in this thesis suggest that the global aggregate momentum is weak or strictly negative. The discrepancies arise as @menkhoff2012currency's dataset ended in 2010 and used a smaller sample size of 48 currencies. As @viale_factor_2025 notes, the incorporation of the last 15 years of electronic trading efficiency and a wider set of emerging market currencies proves that the aggregate momentum factor has structurally decayed.
+
+In addition, this thesis contradicts the findings of @asness2013value that the value (carry) and momentum are negatively correlated everywhere, making them a global hedge. The thesis depicts how in emerging markets, the two strategies are positively correlated and across markets they are entirely uncorrelated. This finding is a direct result of market segregation. While @asness2013value treated all global currencies in their sample as a single asset class, this thesis exposed a flaw in their generalisation. In emerging markets trend-following investors (momentum strategy) end up buying the same high-yielding currencies as carry traders (a dynamic @menkhoff2012currency hinted at). As a result they crash at the same time during global liquidity shocks, thus failing to provide the desired downside protection. 
+
+DM momentum reveals poor results with strictly negative returns, massive unrecovered drawdowns post-2008 and a Fama-MacBeth marginal return of zero. Modern electronic trading and greater market efficiency have reduced the profitability of simple trend-following strategies in developed markets. While the 12-month momentum strategy fails globally, the short-term momentum of one month only survives within the less efficient and liquid emerging market as a priced factor.
+
+Together these findings suggest that it is no longer reliable to regard FX as a homogeneous, universal asset class. Instead there has to be a segregation of the underlying market regimes. Their yields, risk exposure, drawdowns and factor premia are strictly dictated by these markets, liquidity environment and structural inflation differentials. These findings deliver a clear answer to the research question that the economic and statistical significance of FX strategies is dependent on the underlying market. 
+
+\newpage
+# Appendix {-}
+
+```{r tab-descriptive-stats, fig.pos="H"}
+currency_summary_stats |>
+  mutate(mean_ret = round(mean_ret, 2), volatility = round(volatility, 2)) |>
+  kable(
+    col.names = c("Market", "Currency", "Start Date", "End Date", "Obs (N)", "Ann. Mean (%)", "Ann. Vol (%)"),
+    caption = "Descriptive Statistics of Currency Sample",
+    align = "llccrcc", booktabs = TRUE, longtable = TRUE) |>
+  kable_styling(latex_options = c("striped", "hold_position", "repeat_header"), font_size = 8) |>
+  footnote(general = "The Start Date reflects the earliest available spot observation in the raw dataset. The observation count (N) and performance metrics reflect only the months where valid forward and spot quotes were simultaneously available to compute a tradable net excess return.",
+           general_title = "Note:",
+           footnote_as_chunk = TRUE,
+           escape = FALSE,
+           threeparttable = TRUE)
+
+```
+\newpage
+# References
